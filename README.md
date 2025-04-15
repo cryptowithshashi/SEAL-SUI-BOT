@@ -26,8 +26,8 @@ You will need the following software installed on your system (PC or VPS):
 1.  **Open your terminal or connect to your VPS via SSH.**
 2.  **Clone the repository:**
     ```bash
-    git clone <repository_url> # Replace <repository_url> with the actual URL
-    cd seal-bot-tui # Or the name of the directory cloned
+    git clone https://github.com/cryptowithshashi/SEAL-SUI-BOT.git
+    cd seal-bot-tui 
     ```
 3.  **Install dependencies:**
     ```bash
