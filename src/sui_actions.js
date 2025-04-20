@@ -2,6 +2,7 @@
 /**
  * @file Core logic for interacting with Sui blockchain and SEAL protocol.
  * v2: Updated generateRandomName for more descriptive names.
+ * v3: Implemented exponential backoff for blob uploads.
  */
 
 const { Ed25519Keypair } = require('@mysten/sui.js/keypairs/ed25519');
@@ -19,11 +20,12 @@ const {
     PUBLISHER_URLS,
     DEFAULT_BLOB_EPOCHS,
     MAX_BLOB_UPLOAD_RETRIES,
-    BLOB_UPLOAD_RETRY_DELAY_MS,
+    BLOB_UPLOAD_RETRY_DELAY_MS, // Now used as INITIAL delay
+    MAX_BACKOFF_DELAY_MS, // Added recommended max delay
     DEFAULT_IMAGE_URL,
     LOCAL_IMAGE_PATH,
     // TASK_REPEAT_DELAY_MS is used in app.js
-} = require('./config');
+} = require('./config'); // Ensure MAX_BACKOFF_DELAY_MS is added to config.js
 
 // --- Word lists for random names ---
 const ADJECTIVES = ['Quick', 'Lazy', 'Sleepy', 'Shiny', 'Brave', 'Clever', 'Happy', 'Silent', 'Witty', 'Gentle', 'Ancient', 'Mystic', 'Golden', 'Iron', 'Cosmic'];
@@ -238,9 +240,10 @@ class SuiActions {
      * @returns {Promise<Buffer>} The image data as a Buffer.
      */
     async fetchImageFromUrl(imageUrl) {
-        logger.info(`Fetching image from URL: ${imageUrl}`);
+        logger.info(`Workspaceing image from URL: ${imageUrl}`);
         const agent = this.proxyManager?.createProxyAgent();
-        const config = { method: 'get', url: imageUrl, responseType: 'arraybuffer', httpsAgent: agent, httpAgent: agent };
+        // Increased timeout for potentially slow image downloads
+        const config = { method: 'get', url: imageUrl, responseType: 'arraybuffer', httpsAgent: agent, httpAgent: agent, timeout: 60000 };
 
         try {
             const response = await axios(config);
@@ -276,24 +279,32 @@ class SuiActions {
 
     /**
      * Uploads image data as a blob to a randomly selected SEAL publisher.
-     * Retries on failure.
+     * Retries on failure using exponential backoff.
      * @param {Buffer|string} imageSource - Image data Buffer, local path, or URL.
      * @param {number} [epochs=DEFAULT_BLOB_EPOCHS] - Number of epochs for the blob.
      * @returns {Promise<string>} The blob ID upon successful upload.
      */
     async uploadBlob(imageSource, epochs = DEFAULT_BLOB_EPOCHS) {
         let imageData;
-        if (Buffer.isBuffer(imageSource)) { imageData = imageSource; }
-        else if (typeof imageSource === 'string') {
-            if (imageSource.match(/^https?:\/\//)) { imageData = await this.fetchImageFromUrl(imageSource); }
-            else { imageData = await this.loadLocalImage(imageSource); }
-        } else { throw new Error('Invalid imageSource provided to uploadBlob.'); }
+        try {
+            if (Buffer.isBuffer(imageSource)) { imageData = imageSource; }
+            else if (typeof imageSource === 'string') {
+                if (imageSource.match(/^https?:\/\//)) { imageData = await this.fetchImageFromUrl(imageSource); }
+                else { imageData = await this.loadLocalImage(imageSource); }
+            } else { throw new Error('Invalid imageSource provided to uploadBlob.'); }
+        } catch (fetchError) {
+            logger.error(`Failed to get image data before upload: ${fetchError.message}`);
+            throw fetchError; // Stop if image can't be loaded/fetched
+        }
+
 
         logger.info(`Starting blob upload process (${(imageData.length / 1024).toFixed(2)} KB, ${epochs} epochs)`);
         if (!PUBLISHER_URLS || PUBLISHER_URLS.length === 0) { throw new Error('No publisher URLs configured.'); }
 
         let lastError = null;
         const shuffledPublishers = [...PUBLISHER_URLS].sort(() => 0.5 - Math.random());
+        let delay = BLOB_UPLOAD_RETRY_DELAY_MS; // Initial delay from config
+        const maxDelay = MAX_BACKOFF_DELAY_MS || 30000; // Use config value or default to 30s
 
         for (let attempt = 1; attempt <= MAX_BLOB_UPLOAD_RETRIES; attempt++) {
             const publisherIndex = (attempt - 1) % shuffledPublishers.length;
@@ -303,37 +314,77 @@ class SuiActions {
 
             logger.wait(`Attempt ${attempt}/${MAX_BLOB_UPLOAD_RETRIES}: Uploading blob to ${publisherName}...`);
             const agent = this.proxyManager?.createProxyAgent();
-            const config = { method: 'put', url: publisherUrl, headers: { 'Content-Type': 'application/octet-stream' }, data: imageData, httpsAgent: agent, httpAgent: agent, timeout: 30000 };
+            const config = { method: 'put', url: publisherUrl, headers: { 'Content-Type': 'application/octet-stream' }, data: imageData, httpsAgent: agent, httpAgent: agent, timeout: 60000 }; // Increased timeout for upload
 
             try {
                 const response = await axios(config);
                 let blobId;
+
+                // Check various possible success response structures
                 if (response.data?.newlyCreated?.blobObject?.blobId) { blobId = response.data.newlyCreated.blobObject.blobId; logger.debug(`Blob newly created by ${publisherName}.`); }
                 else if (response.data?.alreadyCertified?.blobId) { blobId = response.data.alreadyCertified.blobId; logger.debug(`Blob already certified by ${publisherName}.`); }
-                else if (response.data?.blobId) { blobId = response.data.blobId; }
-                else { logger.warn(`Unexpected response structure from ${publisherName}: ${JSON.stringify(response.data)}`); throw new Error(`Invalid response from publisher ${publisherName}`); }
+                else if (response.data?.blobId) { blobId = response.data.blobId; } // Direct blobId
+                else {
+                    // Log unexpected success structure but attempt to find blobId heuristically (might need adjustment)
+                    const potentialId = findPotentialBlobId(response.data);
+                    if (potentialId) {
+                        logger.warn(`Unexpected success response structure from ${publisherName}, but found potential blobId: ${potentialId.substring(0,10)}...`);
+                        blobId = potentialId;
+                    } else {
+                        logger.warn(`Unexpected response structure from ${publisherName}: ${JSON.stringify(response.data)}`);
+                        throw new Error(`Invalid response structure from publisher ${publisherName}`);
+                    }
+                }
 
                 if (!blobId) { throw new Error(`Blob ID missing in response from ${publisherName}`); }
 
                 logger.success(`Blob uploaded successfully via ${publisherName}! Blob ID: ${blobId.substring(0,10)}...`); // Shorten ID
-                return blobId;
+                return blobId; // Success! Exit the function.
+
             } catch (error) {
-                lastError = error;
+                lastError = error; // Store the error from this attempt
+                const status = error.response?.status;
+                const responseData = error.response?.data;
+
                 let errorMessage = `Blob upload attempt ${attempt} failed with ${publisherName}`;
-                if (error.response) { errorMessage += ` | Status: ${error.response.status}, Data: ${JSON.stringify(error.response.data)}`; }
-                else if (error.request) { errorMessage += ` | No response received. Network issue or timeout?`; }
+                if (status) { errorMessage += ` | Status: ${status}, Data: ${JSON.stringify(responseData)}`; }
+                else if (error.request) { errorMessage += ` | No response received (Network issue or timeout?)`; }
                 else { errorMessage += ` | Error: ${error.message}`; }
                 logger.error(errorMessage);
 
-                if (attempt < MAX_BLOB_UPLOAD_RETRIES) {
-                    logger.wait(`Retrying in ${BLOB_UPLOAD_RETRY_DELAY_MS / 1000} seconds...`);
-                    await new Promise(resolve => setTimeout(resolve, BLOB_UPLOAD_RETRY_DELAY_MS));
+                // Check if we should retry based on the status code or error type
+                const isRetryable = !status || status === 429 || status >= 500; // Retry on network errors, 429, and 5xx server errors
+
+                if (isRetryable && attempt < MAX_BLOB_UPLOAD_RETRIES) {
+                    logger.wait(`Retrying in ${(delay / 1000).toFixed(1)} seconds...`);
+                    await new Promise(resolve => setTimeout(resolve, delay));
+                    // Exponential backoff: double the delay for the next retry, add jitter, cap at maxDelay
+                    delay = Math.min(delay * 2 + Math.floor(Math.random() * 1000), maxDelay);
+                } else if (!isRetryable) {
+                    logger.error(`Non-retryable error encountered (Status: ${status}). Stopping upload attempts.`);
+                    throw error; // Abort on non-retryable errors (e.g., 400, 401, 403)
                 }
             }
-        }
+        } // End of retry loop
+
+        // If the loop finishes without returning, all retries have failed
         logger.error(`Blob upload failed after ${MAX_BLOB_UPLOAD_RETRIES} attempts.`);
         throw new Error(`Failed to upload blob after maximum retries. Last error: ${lastError?.message || 'Unknown error'}`);
     }
+
+    // Helper function to potentially find blobId in unknown structures (adjust as needed)
+    findPotentialBlobId(data) {
+        if (!data || typeof data !== 'object') return null;
+        for (const key in data) {
+            if (key.toLowerCase().includes('blobid') && typeof data[key] === 'string' && data[key].length > 10) return data[key];
+            if (typeof data[key] === 'object') {
+                const nestedId = this.findPotentialBlobId(data[key]);
+                if (nestedId) return nestedId;
+            }
+        }
+        return null;
+    }
+
 
     /**
      * Publishes a blob to a specific allowlist entry.
@@ -391,10 +442,11 @@ class SuiActions {
             const { allowlistId, entryObjectId } = await this.createAllowlistEntry(); // Uses new name generator
             await this.addAddressToAllowlist(allowlistId, entryObjectId, this.address);
             for (const addr of additionalAddresses) {
-                if (addr && typeof addr === 'string') { await this.addAddressToAllowlist(allowlistId, entryObjectId, addr); }
-                else { logger.warn(`Skipping invalid additional address: ${addr}`); }
+                if (addr && typeof addr === 'string' && addr.startsWith('0x')) { // Basic validation
+                    await this.addAddressToAllowlist(allowlistId, entryObjectId, addr);
+                } else { logger.warn(`Skipping invalid additional address: ${addr}`); }
             }
-            const blobId = await this.uploadBlob(imageSource);
+            const blobId = await this.uploadBlob(imageSource); // Uses updated upload logic
             await this.publishBlobToAllowlist(allowlistId, entryObjectId, blobId);
 
             const result = { allowlistId, entryObjectId, blobId };
@@ -402,22 +454,22 @@ class SuiActions {
             return result;
         } catch (error) {
             logger.error("--- Complete Allowlist Workflow Failed ---", error);
-            throw error;
+            throw error; // Propagate error to the caller (e.g., app.js)
         }
     }
 
      /**
-     * Runs the full workflow for creating a service subscription, uploading, and publishing.
-     * @param {string|Buffer} imageSource - URL, local path, or Buffer of the image.
-     * @param {number|string} amount - Subscription amount.
-     * @param {number|string} duration - Subscription duration.
-     * @returns {Promise<object>} Result object containing IDs.
-     */
+      * Runs the full workflow for creating a service subscription, uploading, and publishing.
+      * @param {string|Buffer} imageSource - URL, local path, or Buffer of the image.
+      * @param {number|string} amount - Subscription amount.
+      * @param {number|string} duration - Subscription duration.
+      * @returns {Promise<object>} Result object containing IDs.
+      */
     async runCompleteSubscriptionWorkflow(imageSource = DEFAULT_IMAGE_URL, amount = 10, duration = 60000000) {
         logger.info("--- Starting Complete Subscription Workflow ---");
         try {
             const { sharedObjectId, serviceEntryId } = await this.createServiceSubscriptionEntry(amount, duration); // Uses new name generator
-            const blobId = await this.uploadBlob(imageSource);
+            const blobId = await this.uploadBlob(imageSource); // Uses updated upload logic
             await this.publishBlobToSubscription(sharedObjectId, serviceEntryId, blobId);
 
             const result = { sharedObjectId, serviceEntryId, blobId };
@@ -425,9 +477,24 @@ class SuiActions {
             return result;
         } catch (error) {
             logger.error("--- Complete Subscription Workflow Failed ---", error);
-            throw error;
+            throw error; // Propagate error
         }
     }
 }
+
+// Added the helper function definition inside the class scope if needed or keep outside if standalone
+// For simplicity, keeping it outside here as it doesn't rely on 'this'
+function findPotentialBlobId(data) {
+    if (!data || typeof data !== 'object') return null;
+    for (const key in data) {
+        if (key.toLowerCase().includes('blobid') && typeof data[key] === 'string' && data[key].length > 10) return data[key];
+        if (typeof data[key] === 'object' && data[key] !== null) { // Check for null to prevent infinite recursion on circular refs if any
+            const nestedId = findPotentialBlobId(data[key]);
+            if (nestedId) return nestedId;
+        }
+    }
+    return null;
+}
+
 
 module.exports = SuiActions;
