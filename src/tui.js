@@ -1,7 +1,7 @@
 // src/tui.js
 /**
  * @file Manages the Terminal User Interface (TUI) using the blessed library.
- * v5: Adjusted banner padding for better title centering.
+ * v6: Removed explicit padding from bannerBox, relying on {center} tag.
  */
 
 const blessed = require('blessed');
@@ -19,7 +19,7 @@ class TerminalUI {
             smartCSR: true,
             title: TUI_TITLE,
             fullUnicode: true,
-            autoPadding: true, // Automatically handle padding for borders etc.
+            autoPadding: true, // Keep autoPadding for overall layout consistency
             // dump: __dirname + '/logs/tui.log', // Uncomment for debugging layout
             // forceUnicode: true,
         });
@@ -32,7 +32,6 @@ class TerminalUI {
 
         if (this.scrollablePanes.length > 0) {
             this.scrollablePanes[0].focus(); // Set initial focus
-            // Blessed applies focus style automatically based on the 'focus' property
         }
         this.render();
     }
@@ -45,7 +44,7 @@ class TerminalUI {
         const bannerHeight = 3; // Height of the top title banner
         const mainLogWidth = '65%'; // Width percentage for the main log panel
         const rightPanelLeft = mainLogWidth; // Starting position for the right panel
-        const rightPanelWidth = `100%-${mainLogWidth}`; // Calculate remaining width (blessed understands this format)
+        const rightPanelWidth = `100%-${mainLogWidth}`; // Calculate remaining width
 
         // --- Define common styles ---
         const boxStyle = {
@@ -66,15 +65,16 @@ class TerminalUI {
             left: 0,
             width: '100%',
             height: bannerHeight,
+            // *** CHANGE: Relying solely on {center} tag for centering ***
             content: `{center}${TUI_TITLE}{/center}`, // Centered title text
             tags: true,
             border: { type: 'line' },
-            // *** CHANGE: Added padding to help center content vertically within the 3 lines ***
-            padding: {
-                top: 0, // No extra padding needed vertically as content height is 1
-                left: 1,
-                right: 1
-            },
+            // *** CHANGE: Removed explicit padding from previous attempt ***
+            // padding: {
+            //     top: 0,
+            //     left: 1,
+            //     right: 1
+            // },
             style: {
                 ...boxStyle, // Base style
                 bg: 'blue', // Banner background
@@ -108,14 +108,12 @@ class TerminalUI {
         this.scrollablePanes.push(this.mainLogBox);
 
         // Container for the Right Panel (Success Log + Status)
-        // This helps group the right-side elements and manage their layout together.
         this.rightPanelContainer = blessed.box({
             parent: this.screen,
             top: bannerHeight,
             left: rightPanelLeft,
             width: rightPanelWidth,
             height: `100%-${bannerHeight}`,
-            // No border for the container itself; elements inside will have borders.
             style: { bg: 'black' } // Match background, avoids visual glitches
         });
 
@@ -185,20 +183,15 @@ class TerminalUI {
         // Listen for log events from the central logger
         logger.on('log', (logEntry) => {
             this.addLog(logEntry);
-            // No need to call render here, blessed.log usually updates itself.
-            // We render on status updates and key presses which is less frequent.
         });
 
         // Listen for status update events from the central logger
         logger.on('statusUpdate', (statusData) => {
              this.updateStatus(statusData);
-             // updateStatus calls render
         });
 
         // Handle screen resize events
         this.screen.on('resize', () => {
-            // Blessed elements with percentage dimensions should resize automatically.
-            // Re-rendering ensures everything is drawn correctly after resize.
             this.screen.render();
         });
 
@@ -213,22 +206,20 @@ class TerminalUI {
 
         // Handle Tab key for focus cycling forward
         this.screen.key(['tab'], (ch, key) => {
-            // Blessed handles focus changes internally, including style updates via 'focus' property
             this.screen.focusNext();
-            this.screen.render(); // Re-render to show focus change clearly
+            this.screen.render();
         });
 
          // Handle Shift+Tab key for reverse focus cycling
         this.screen.key(['S-tab'], (ch, key) => {
-            // Blessed handles focus changes internally
             this.screen.focusPrevious();
-            this.screen.render(); // Re-render to show focus change clearly
+            this.screen.render();
         });
 
-        // Enable mouse event handling (allows clicking to focus, scrolling)
+        // Enable mouse event handling
         this.screen.enableMouse();
 
-        // Update currentFocusIndex when focus changes (useful if needed elsewhere)
+        // Update currentFocusIndex when focus changes
         this.screen.on('element focus', (el) => {
             const newIndex = this.scrollablePanes.indexOf(el);
             if (newIndex !== -1) {
@@ -243,7 +234,6 @@ class TerminalUI {
      * @returns {string} Formatted log string with timestamp, icon, and message.
      */
     formatLogMessage(logEntry) {
-        // Ensure timestamp exists and is a Date object, default to now if not
         const timestamp = (logEntry.timestamp instanceof Date)
             ? logEntry.timestamp.toLocaleTimeString()
             : new Date().toLocaleTimeString();
@@ -259,8 +249,6 @@ class TerminalUI {
             case 'WALLET': color = 'magenta'; break;
             case 'DEBUG': color = 'gray'; break;
         }
-        // Escape potentially problematic characters for blessed tags
-        // Use nullish coalescing for safety on message and icon
         const cleanMessage = blessed.helpers.escape(logEntry.message ?? '');
         const icon = logEntry.icon ?? '?';
         return `[${timestamp}] ${icon} {${color}-fg}${cleanMessage}{/${color}-fg}`;
@@ -273,25 +261,21 @@ class TerminalUI {
     addLog(logEntry) {
         if (!logEntry || typeof logEntry !== 'object') {
              console.error("TUI received invalid log entry:", logEntry);
-             return; // Avoid processing invalid entries
+             return;
         }
         const formattedMessage = this.formatLogMessage(logEntry);
 
-        // Log everything except DEBUG (unless not in production) to main log
         if (logEntry.level !== 'DEBUG' || process.env.NODE_ENV !== 'production') {
-             if (this.mainLogBox) { // Check if box exists
+             if (this.mainLogBox) {
                 this.mainLogBox.log(formattedMessage);
              }
         }
 
-        // Log SUCCESS messages also to the success log
         if (logEntry.level === 'SUCCESS') {
-             if (this.successLogBox) { // Check if box exists
+             if (this.successLogBox) {
                  this.successLogBox.log(formattedMessage);
              }
         }
-        // Render less frequently - rendering is handled by status updates / key presses
-        // this.render();
     }
 
     /**
@@ -304,7 +288,6 @@ class TerminalUI {
              ? `Wallet ${statusData.walletIndex ?? '-'}/${statusData.totalWallets ?? '-'}: ${statusData.loadedWallet || 'N/A'}`
              : `Wallet: ${statusData.loadedWallet || 'N/A'}`;
 
-         // Instructions emphasize the focus border color
          return ` Status: {bold}${statusData.overallStatus || 'N/A'}{/bold}
  ${walletInfo}
  Active Bots: ${statusData.activeBots ?? 'N/A'}
@@ -314,7 +297,7 @@ class TerminalUI {
     - {yellow-fg}Tab{/yellow-fg}: Cycle Focus Pane
       ({yellow-fg}Yellow Border{/yellow-fg} = Active)
     - {yellow-fg}Scroll{/yellow-fg}: Mouse Wheel / ↑↓ / PgUp/PgDn
-      (in focused pane)`; // Removed trailing newline/spaces for cleaner look
+      (in focused pane)`;
     }
 
      /**
@@ -322,7 +305,7 @@ class TerminalUI {
       * @param {object} statusUpdateData - New status data fields to update.
       */
      updateStatus(statusUpdateData) {
-         if (this.statusBox && statusUpdateData) { // Check if box and data exist
+         if (this.statusBox && statusUpdateData) {
              this.currentStatus = { ...this.currentStatus, ...statusUpdateData };
              const formattedContent = this.formatStatusContent(this.currentStatus);
              this.statusBox.setContent(formattedContent);
@@ -332,11 +315,10 @@ class TerminalUI {
 
 
     /**
-     * Renders the TUI screen. Debounce or throttle if called too frequently.
+     * Renders the TUI screen.
      */
     render() {
         if (this.screen) {
-            // Basic check to prevent rendering if already destroyed
             this.screen.render();
         }
     }
@@ -348,7 +330,7 @@ class TerminalUI {
         logger.info("Destroying TUI screen...");
         if (this.screen) {
             this.screen.destroy();
-            this.screen = null; // Allow garbage collection
+            this.screen = null;
         }
     }
 }
