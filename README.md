@@ -1,19 +1,21 @@
-# CORESKY BOT
+# SEAL SUI AUTOMATIC BOT
 
-A Node.js script built with a Terminal User Interface (TUI) that automates interactions with the CoreSky protocol, focusing on simplifying and managing multiple wallet tasks efficiently.
+A Node.js script with a Terminal User Interface (TUI) designed to automate interactions with the Sui SEAL Protocol, specifically focusing on creating allowlist/service entries and publishing content for multiple accounts.
 
 ## Features
 
-- **Automated CoreSky Tasks**: Executes predefined tasks on the CoreSky protocol automatically.
-- **Multi-Wallet Compatibility**: Accepts multiple wallet formats like private keys, mnemonics, or hex strings.
-- **Batch Processing**: Perform actions for multiple wallets in one go.
-- **Proxy Support**: Supports rotating proxies for safer and distributed execution.
-- **Random Task Looping**: Customize how many times each wallet performs the set of tasks.
-- **User-Friendly TUI**: Interactive and informative Terminal UI for real-time status and logs.
+- **Automated Protocol Interaction**: Automates the creation of allowlist entries and service subscriptions.
+- **Multi-Wallet Compatibility**: Supports multiple wallet formats, including suiprivkey, base64, hex, and mnemonics.
+- **Batch Allowlist Creation**: Add multiple addresses to allowlists with a single command.
+- **Blob Uploading**: Randomly selects and uploads blobs to SEAL publishers.
+- **Flexible Image Sources**: Supports both local and remote image files for publishing.
+- **Proxy Integration**: Rotates requests through proxies listed in `proxies.txt`.
+- **Customizable Task Looping**: Set how many times each wallet should execute tasks.
+- **Smart Naming System**: Generates human-readable names for published content.
 
 ## Pre Requisites
 
-Make sure Git, Node.js, and npm are installed on your system.
+Ensure Git, Node.js, and npm are installed. Use your VPS distribution's package manager:
 
 ```bash
 sudo apt update
@@ -25,8 +27,8 @@ sudo apt install git nodejs npm -y
 ### Clone Repository
 
 ```bash
-git clone https://github.com/cryptowithshashi/CORESKY-BOT.git
-cd CORESKY-BOT
+git clone https://github.com/cryptowithshashi/SEAL-SUI-BOT.git
+cd SEAL-SUI-BOT
 ```
 
 ### Install Dependencies
@@ -37,25 +39,23 @@ npm install
 
 ## Configuration
 
-- **wallets.txt** - This should contain your CoreSky tokens, one per line. 
-  - To get the token:
-    1. Visit [https://coresky.com](https://coresky.com) and sign in.
-    2. Open Developer Tools (right-click -> Inspect).
-    3. Go to the **Network** tab.
-    4. Refresh the page or perform an action.
-    5. Look for a request that includes the token in the headers or payload.
-    6. Copy the token and paste it line by line in `wallets.txt`.
+- **wallets.txt** - Contains one wallet per line. Supports private keys, hex, base64, or mnemonic phrases. Example:
+  ```
+  suiprivkey1abc...xyz
+  your twelve or twenty four word mnemonic here
+  0xabcdef123456...7890
+  ```
 
-- **proxies.txt** (Optional) - Add proxies line by line. Format examples:
+- **proxies.txt** (Optional) - Contains a list of proxy URLs, one per line. The script matches each proxy with the corresponding cookie by line order:
   ```
   host:port
   host:port:user:pass
   user:pass@host:port
   ```
 
-- **.env** (Optional) - Customize your CoreSky RPC endpoint:
+- **.env** (Optional) - To customize your Sui RPC endpoint:
   ```env
-  CORESKY_RPC_URL=https://rpc.coresky.network
+  SUI_RPC_URL=https://fullnode.mainnet.sui.io:443
   ```
 
 ## Execute the Bot
@@ -64,19 +64,21 @@ npm install
 node app.js
 ```
 
-You will be prompted to enter the number of repetitions per wallet. The TUI will then appear and begin processing.
+Enter the number of repetitions per wallet when prompted. The TUI interface will appear and begin processing.
 
 ## TUI Controls
 
-- **Switch Views**: Press `Tab` to toggle between the log and status panes.
-- **Scroll**: Use arrow keys, `j/k`, or mouse scroll.
-- **Exit**: Press `Ctrl+C` to terminate the script.
+- **Focus Panes**: Press `Tab` to switch between log and status views.
+- **Scroll**: Use arrow keys, `j/k`, or mouse scroll in the active pane.
+- **Exit**: Press `Ctrl+C` to stop the bot.
 
 ## Disclaimer
 
-This script handles sensitive wallet data and interacts with blockchain networks. Use it at your own risk. The author and AI assistant hold no responsibility for any losses or damages.
+This script interacts with blockchain networks and uses sensitive data such as private keys. Use it responsibly. The author and AI assistant are not responsible for any loss or damages incurred.
 
 ## ABOUT ME
 
 - **Twitter**: [https://x.com/SHASHI522004](https://x.com/SHASHI522004)
 - **GitHub**: [https://github.com/cryptowithshashi](https://github.com/cryptowithshashi)
+````
+
